@@ -144,6 +144,31 @@ data class InventoryCategoryCrossRef(
     val categoryId: Long
 )
 
+@Entity(
+    tableName = "menu_recipes",
+    primaryKeys = ["menuItemId", "ingredientItemId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = InventoryItemEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["menuItemId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = InventoryItemEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["ingredientItemId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("menuItemId"), Index("ingredientItemId")]
+)
+data class MenuRecipeEntity(
+    val menuItemId: Long,
+    val ingredientItemId: Long,
+    val quantityRequired: Double
+)
+
 data class InventoryItemWithCategories(
     @Embedded val item: InventoryItemEntity,
     @Relation(

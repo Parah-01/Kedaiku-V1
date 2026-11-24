@@ -92,9 +92,9 @@ class AppPreferences(private val context: Context) {
             it[Keys.STORE_ADDRESS] = profile.storeAddress.trim()
             it[Keys.STORE_PHONE] = profile.storePhone.trim()
             it[Keys.RECEIPT_FOOTER] = profile.receiptFooter.trim()
-            it[Keys.TAX_TAKE_AWAY_PERCENT] = profile.taxTakeAwayPercent.coerceIn(0, 35)
-            it[Keys.TAX_SHOPEE_PERCENT] = profile.taxShopeePercent.coerceIn(0, 35)
-            it[Keys.TAX_GRAB_PERCENT] = profile.taxGrabPercent.coerceIn(0, 35)
+            it[Keys.TAX_TAKE_AWAY_PERCENT] = profile.taxTakeAwayPercent.coerceIn(0, 99)
+            it[Keys.TAX_SHOPEE_PERCENT] = profile.taxShopeePercent.coerceIn(0, 99)
+            it[Keys.TAX_GRAB_PERCENT] = profile.taxGrabPercent.coerceIn(0, 99)
         }
     }
 

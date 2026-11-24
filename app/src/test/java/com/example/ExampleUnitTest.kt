@@ -4,6 +4,9 @@ import com.example.data.local.CustomizationOptionEntity
 import com.example.data.local.CustomizationOptionType
 import com.example.data.local.ExpenseCategory
 import com.example.data.local.ExpenseEntity
+import com.example.data.local.InventoryItemEntity
+import com.example.data.local.InventoryType
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.OrderEntity
 import com.example.data.local.OrderItemEntity
 import com.example.data.local.OrderStatus
@@ -16,6 +19,7 @@ import com.example.ui.AnalyticsPeriod
 import com.example.ui.CartLineItem
 import com.example.ui.MainViewModel
 import com.example.util.Formatters
+import com.example.util.RecipeStockCalculator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -83,7 +87,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun storeProfile_resolvesTaxPerServiceTypeAndAllowedEnumsOnly() {
+    fun storeProfile_resolvesTaxUpTo99PercentAndAllowedEnumsOnly() {
         assertEquals(
             listOf(OrderType.TAKE_AWAY, OrderType.ONLINE_SHOPEE, OrderType.ONLINE_GRAB),
             OrderType.entries
@@ -92,12 +96,113 @@ class ExampleUnitTest {
 
         val profile = StoreProfile(
             taxTakeAwayPercent = 10,
-            taxShopeePercent = 12,
-            taxGrabPercent = 15
+            taxShopeePercent = 50,
+            taxGrabPercent = 99
         )
         assertEquals(10, profile.taxPercentFor(OrderType.TAKE_AWAY))
-        assertEquals(12, profile.taxPercentFor(OrderType.ONLINE_SHOPEE))
-        assertEquals(15, profile.taxPercentFor(OrderType.ONLINE_GRAB))
+        assertEquals(50, profile.taxPercentFor(OrderType.ONLINE_SHOPEE))
+        assertEquals(99, profile.taxPercentFor(OrderType.ONLINE_GRAB))
+    }
+
+    @Test
+    fun recipeStockCalculator_computesEffectiveStockSharedCartAndPhoneticMatch() {
+        val matchaMenu = InventoryItemEntity(
+            id = 1L,
+            sku = "MIN-003",
+            name = "Matcha Latte Artisan",
+            category = "Kopi & Minuman",
+            itemType = InventoryType.MENU.name,
+            price = 28000L,
+            costPrice = 10000L,
+            stockQty = 20.0,
+            minThreshold = 5.0,
+            unit = "cup"
+        )
+        val kopiSusuMenu = InventoryItemEntity(
+            id = 2L,
+            sku = "KOP-001",
+            name = "Kopi Susu Gula Aren",
+            category = "Kopi & Minuman",
+            itemType = InventoryType.MENU.name,
+            price = 24000L,
+            costPrice = 8500L,
+            stockQty = 35.0,
+            minThreshold = 8.0,
+            unit = "cup"
+        )
+        val powderMacha = InventoryItemEntity(
+            id = 10L,
+            sku = "BHN-004",
+            name = "Powder Macha",
+            category = "Bahan Baku",
+            itemType = InventoryType.INGREDIENT.name,
+            price = 0L,
+            costPrice = 350L,
+            stockQty = 150.0, // enough for 10 cups @ 15g/cup
+            minThreshold = 30.0,
+            unit = "gr"
+        )
+        val milk = InventoryItemEntity(
+            id = 11L,
+            sku = "BHN-002",
+            name = "Susu UHT Full Cream",
+            category = "Bahan Baku",
+            itemType = InventoryType.INGREDIENT.name,
+            price = 0L,
+            costPrice = 20L,
+            stockQty = 1000.0, // shared: 150ml/cup -> max 6 cups total across both menus
+            minThreshold = 300.0,
+            unit = "ml"
+        )
+
+        val recipes = listOf(
+            MenuRecipeEntity(menuItemId = 1L, ingredientItemId = 10L, quantityRequired = 15.0),
+            MenuRecipeEntity(menuItemId = 1L, ingredientItemId = 11L, quantityRequired = 150.0),
+            MenuRecipeEntity(menuItemId = 2L, ingredientItemId = 11L, quantityRequired = 150.0)
+        )
+        val itemsById = listOf(matchaMenu, kopiSusuMenu, powderMacha, milk).associateBy { it.id }
+        val recipesByMenuId = recipes.groupBy { it.menuItemId }
+
+        // Effective stock limited by shared milk (floor(1000 / 150) = 6)
+        assertEquals(6.0, RecipeStockCalculator.computeEffectiveStock(matchaMenu, recipesByMenuId, itemsById), 0.001)
+
+        // Recipe HPP = (15 * 350) + (150 * 20) = 5250 + 3000 = 8250
+        assertEquals(
+            8250L,
+            RecipeStockCalculator.computeRecipeCostPrice(
+                listOf(10L to 15.0, 11L to 150.0),
+                itemsById
+            )
+        )
+
+        // If 4 cups of Kopi Susu are already in cart (consuming 600ml milk), only 400ml milk remains -> 2 Matcha Latte left
+        val cart = listOf(
+            CartLineItem(
+                lineKey = "2|Regular",
+                itemId = 2L,
+                itemName = kopiSusuMenu.name,
+                basePrice = kopiSusuMenu.price,
+                unitPrice = kopiSusuMenu.price,
+                quantity = 4,
+                optionsSummary = "Regular"
+            )
+        )
+        assertEquals(
+            2,
+            RecipeStockCalculator.computeRemainingAddableQty(
+                targetMenuId = 1L,
+                cartLines = cart,
+                itemsById = itemsById,
+                recipesByMenuId = recipesByMenuId
+            )
+        )
+
+        // Phonetic matching: "Powder Macha" automatically suggests "Matcha Latte Artisan"
+        val suggested = RecipeStockCalculator.suggestMatchingItems(
+            sourceName = powderMacha.name,
+            candidates = listOf(matchaMenu, kopiSusuMenu)
+        )
+        assertEquals(listOf(matchaMenu), suggested)
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.example.data.local.CustomizationOptionEntity
 import com.example.data.local.ExpenseEntity
 import com.example.data.local.InventoryCategoryCrossRef
 import com.example.data.local.InventoryItemEntity
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.OrderEntity
 import com.example.data.local.OrderItemEntity
 import com.example.data.local.OrderWithItems
@@ -29,6 +30,13 @@ data class BackupCategoryDto(
 data class BackupCategoryRefDto(
     val inventoryItemId: Long,
     val categoryId: Long
+)
+
+@JsonClass(generateAdapter = true)
+data class BackupMenuRecipeDto(
+    val menuItemId: Long,
+    val ingredientItemId: Long,
+    val quantityRequired: Double
 )
 
 @JsonClass(generateAdapter = true)
@@ -130,11 +138,12 @@ data class BackupStoreDto(
 
 @JsonClass(generateAdapter = true)
 data class KedaiKuBackupPayload(
-    val schemaVersion: Int = 3,
+    val schemaVersion: Int = 4,
     val createdAt: Long = System.currentTimeMillis(),
     val storeProfile: BackupStoreDto,
     val categories: List<BackupCategoryDto> = emptyList(),
     val categoryRefs: List<BackupCategoryRefDto> = emptyList(),
+    val menuRecipes: List<BackupMenuRecipeDto> = emptyList(),
     val customizationOptions: List<BackupCustomizationOptionDto> = emptyList(),
     val expenses: List<BackupExpenseDto> = emptyList(),
     val inventory: List<BackupInventoryDto>,
@@ -160,6 +169,7 @@ object BackupManager {
         store: StoreProfile,
         categories: List<CategoryEntity>,
         categoryRefs: List<InventoryCategoryCrossRef>,
+        menuRecipes: List<MenuRecipeEntity>,
         customizationOptions: List<CustomizationOptionEntity>,
         expenses: List<ExpenseEntity>,
         inventory: List<InventoryItemEntity>,
@@ -182,6 +192,9 @@ object BackupManager {
             },
             categoryRefs = categoryRefs.map {
                 BackupCategoryRefDto(it.inventoryItemId, it.categoryId)
+            },
+            menuRecipes = menuRecipes.map {
+                BackupMenuRecipeDto(it.menuItemId, it.ingredientItemId, it.quantityRequired)
             },
             customizationOptions = customizationOptions.map {
                 BackupCustomizationOptionDto(it.id, it.optionType, it.label, it.extraPrice, it.sortOrder)
@@ -333,6 +346,12 @@ object BackupManager {
     fun BackupCategoryRefDto.toEntity() = InventoryCategoryCrossRef(
         inventoryItemId = inventoryItemId,
         categoryId = categoryId
+    )
+
+    fun BackupMenuRecipeDto.toEntity() = MenuRecipeEntity(
+        menuItemId = menuItemId,
+        ingredientItemId = ingredientItemId,
+        quantityRequired = quantityRequired
     )
 
     fun BackupCustomizationOptionDto.toEntity() = CustomizationOptionEntity(

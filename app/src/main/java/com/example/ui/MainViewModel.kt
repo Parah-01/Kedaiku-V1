@@ -12,6 +12,7 @@ import com.example.data.local.InventoryItemEntity
 import com.example.data.local.InventoryItemWithCategories
 import com.example.data.local.InventoryType
 import com.example.data.local.KedaiKuDatabase
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.OrderStatus
 import com.example.data.local.OrderType
 import com.example.data.local.OrderWithItems
@@ -24,6 +25,7 @@ import com.example.data.repository.CheckoutLineInput
 import com.example.data.repository.CheckoutRequest
 import com.example.data.repository.KedaiKuRepository
 import com.example.ui.theme.ThemeMode
+import com.example.util.RecipeStockCalculator
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -78,7 +80,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         @Suppress("UNCHECKED_CAST")
         val ordersMovements = values[3] as Pair<List<OrderWithItems>, List<com.example.data.local.StockMovementEntity>>
         @Suppress("UNCHECKED_CAST")
-        val optionsAndExpenses = values[4] as Pair<List<CustomizationOptionEntity>, List<ExpenseEntity>>
+        val optionsExpensesRecipes = values[4] as Triple<List<CustomizationOptionEntity>, List<ExpenseEntity>, List<MenuRecipeEntity>>
         val period = values[5] as AnalyticsPeriod
         val receiptOrder = values[6] as OrderWithItems?
         val loginError = values[7] as String?
@@ -90,17 +92,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val allInventory = catsAndInv.second
         val orders = ordersMovements.first
         val movements = ordersMovements.second
-        val customizationOptions = optionsAndExpenses.first
-        val expenses = optionsAndExpenses.second
+        val customizationOptions = optionsExpensesRecipes.first
+        val expenses = optionsExpensesRecipes.second
+        val menuRecipes = optionsExpensesRecipes.third
         val activeStaff = allStaff.filter { it.isActive }
         val currentUser = activeStaff.find { it.id == prefsState.activeStaffId }
         val hasOwner = allStaff.any { it.role == StaffRole.OWNER.name && it.isActive }
         val availableMenu = allInventory.filter {
             it.item.itemType == InventoryType.MENU.name && it.item.isAvailable
         }
-        val lowStock = allInventory.map { it.item }.filter { it.stockQty <= it.minThreshold }
+
+        val itemsById = allInventory.associate { it.item.id to it.item }
+        val recipesByMenu = menuRecipes.groupBy { it.menuItemId }
+        val effectiveStockMap = allInventory.associate { entry ->
+            entry.item.id to RecipeStockCalculator.computeEffectiveStock(entry.item, recipesByMenu, itemsById)
+        }
+
+        val lowStock = allInventory.map { it.item }.filter { item ->
+            (effectiveStockMap[item.id] ?: item.stockQty) <= item.minThreshold
+        }
         val cartLines = parseCartLines(prefsState.draftCartJson)
-            .filter { line -> availableMenu.any { it.item.id == line.itemId && it.item.stockQty > 0 } }
+            .filter { line ->
+                availableMenu.any {
+                    it.item.id == line.itemId && (effectiveStockMap[it.item.id] ?: it.item.stockQty) > 0.0
+                }
+            }
 
         MainUiState(
             isLoading = false,
@@ -117,6 +133,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             categories = categories,
             customizationOptions = customizationOptions,
             expenses = expenses,
+            menuRecipes = menuRecipes,
+            effectiveStockMap = effectiveStockMap,
             inventoryWithCategories = allInventory,
             availableMenu = availableMenu,
             lowStockItems = lowStock,
@@ -149,7 +167,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         combine(allOrdersFlow, recentMovementsFlow) { orders, movements -> orders to movements }
 
     private fun KedaiKuRepository.optionsAndExpensesFlow() =
-        combine(allCustomizationOptionsFlow, allExpensesFlow) { opts, exps -> opts to exps }
+        combine(allCustomizationOptionsFlow, allExpensesFlow, allRecipesFlow) { opts, exps, recipes ->
+            Triple(opts, exps, recipes)
+        }
 
     fun refreshLocalSnapshots() {
         viewModelScope.launch {
@@ -312,7 +332,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Cart management supporting custom variants, toppings, spice levels
+    // Cart management supporting custom variants, toppings, spice levels & recipe stock limits
     fun addCustomizedCartLine(
         item: InventoryItemEntity,
         quantity: Int,
@@ -320,15 +340,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         optionsSummary: String
     ) {
         viewModelScope.launch {
+            val state = uiState.value
             val cleanSummary = optionsSummary.trim()
             val lineKey = "${item.id}|$cleanSummary"
-            val currentLines = uiState.value.cartLines.toMutableList()
-            val totalAlreadyForItem = currentLines.filter { it.itemId == item.id }.sumOf { it.quantity }
-            val maxAllowed = item.stockQty.toInt().coerceAtLeast(0)
-            val allowedToAdd = (maxAllowed - totalAlreadyForItem).coerceAtLeast(0)
+            val currentLines = state.cartLines.toMutableList()
+            val itemsById = state.inventoryWithCategories.associate { it.item.id to it.item }
+            val recipesByMenu = state.menuRecipes.groupBy { it.menuItemId }
+            val allowedToAdd = RecipeStockCalculator.computeRemainingAddableQty(
+                targetMenuId = item.id,
+                cartLines = currentLines,
+                itemsById = itemsById,
+                recipesByMenuId = recipesByMenu
+            )
 
             if (allowedToAdd <= 0) {
-                _messages.tryEmit("Stok ${item.name} tersisa $maxAllowed ${item.unit}.")
+                val eff = state.effectiveStockMap[item.id]?.toInt() ?: 0
+                _messages.tryEmit("Stok ${item.name} / bahan baku tersisa $eff ${item.unit}.")
                 return@launch
             }
             val actualAdd = quantity.coerceIn(1, allowedToAdd)
@@ -358,20 +385,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateCartLineQuantity(lineKey: String, delta: Int) {
         viewModelScope.launch {
-            val currentLines = uiState.value.cartLines.toMutableList()
+            val state = uiState.value
+            val currentLines = state.cartLines.toMutableList()
             val idx = currentLines.indexOfFirst { it.lineKey == lineKey }
             if (idx < 0) return@launch
 
             val target = currentLines[idx]
-            val item = uiState.value.availableMenu.find { it.item.id == target.itemId }?.item
-            val maxAllowed = item?.stockQty?.toInt()?.coerceAtLeast(0) ?: Int.MAX_VALUE
-            val otherQtySameItem = currentLines
-                .filterIndexed { i, line -> i != idx && line.itemId == target.itemId }
-                .sumOf { it.quantity }
-            val nextQty = (target.quantity + delta).coerceIn(0, (maxAllowed - otherQtySameItem).coerceAtLeast(0))
+            val itemsById = state.inventoryWithCategories.associate { it.item.id to it.item }
+            val recipesByMenu = state.menuRecipes.groupBy { it.menuItemId }
+            val allowedExtra = if (delta > 0) {
+                RecipeStockCalculator.computeRemainingAddableQty(
+                    targetMenuId = target.itemId,
+                    cartLines = currentLines,
+                    itemsById = itemsById,
+                    recipesByMenuId = recipesByMenu
+                )
+            } else {
+                0
+            }
 
-            if (delta > 0 && target.quantity + otherQtySameItem >= maxAllowed) {
-                _messages.tryEmit("Stok ${target.itemName} tersisa $maxAllowed.")
+            if (delta > 0 && allowedExtra <= 0) {
+                val eff = state.effectiveStockMap[target.itemId]?.toInt() ?: 0
+                _messages.tryEmit("Stok ${target.itemName} / bahan baku tersisa $eff.")
+                return@launch
+            }
+
+            val nextQty = if (delta > 0) {
+                target.quantity + delta.coerceAtMost(allowedExtra)
+            } else {
+                (target.quantity + delta).coerceAtLeast(0)
             }
 
             if (nextQty <= 0) {
@@ -515,10 +557,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveInventoryItem(item: InventoryItemEntity, selectedCategoryIds: List<Long>) {
+    fun saveInventoryItem(
+        item: InventoryItemEntity,
+        selectedCategoryIds: List<Long>,
+        recipeLinks: List<Pair<Long, Double>> = emptyList()
+    ) {
         val actor = uiState.value.currentUser?.name ?: "Owner"
         viewModelScope.launch {
-            repository.saveInventoryItemWithCategories(item, selectedCategoryIds, actor)
+            repository.saveInventoryItemWithCategories(item, selectedCategoryIds, recipeLinks, actor)
             refreshLocalSnapshots()
             _messages.tryEmit("Item '${item.name}' tersimpan.")
         }

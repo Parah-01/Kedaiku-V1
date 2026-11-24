@@ -587,7 +587,7 @@ private fun StoreProfileEditorCard(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Text("Tarif Pajak per Jenis Layanan (%)", style = MaterialTheme.typography.titleSmall)
+        Text("Tarif Pajak per Jenis Layanan (0 - 99%)", style = MaterialTheme.typography.titleSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = taxTakeAwayStr,
@@ -636,9 +636,9 @@ private fun StoreProfileEditorCard(
                         storeAddress = address,
                         storePhone = phone,
                         receiptFooter = footer,
-                        taxTakeAwayPercent = taxTakeAwayStr.toIntOrNull() ?: 0,
-                        taxShopeePercent = taxShopeeStr.toIntOrNull() ?: 0,
-                        taxGrabPercent = taxGrabStr.toIntOrNull() ?: 0
+                        taxTakeAwayPercent = (taxTakeAwayStr.toIntOrNull() ?: 0).coerceIn(0, 99),
+                        taxShopeePercent = (taxShopeeStr.toIntOrNull() ?: 0).coerceIn(0, 99),
+                        taxGrabPercent = (taxGrabStr.toIntOrNull() ?: 0).coerceIn(0, 99)
                     )
                 )
             },

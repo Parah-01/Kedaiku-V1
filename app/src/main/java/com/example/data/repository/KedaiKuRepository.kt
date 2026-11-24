@@ -13,6 +13,7 @@ import com.example.data.local.InventoryItemEntity
 import com.example.data.local.InventoryItemWithCategories
 import com.example.data.local.InventoryType
 import com.example.data.local.KedaiKuDatabase
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.OrderEntity
 import com.example.data.local.OrderItemEntity
 import com.example.data.local.OrderStatus
@@ -32,6 +33,7 @@ import com.example.util.BackupManager.toEntity
 import com.example.util.CsvImportResult
 import com.example.util.LocalBackupInfo
 import com.example.util.LowStockNotifier
+import com.example.util.RecipeStockCalculator
 import com.example.util.ReportExportImport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -68,6 +70,7 @@ class KedaiKuRepository(
     private val customizationOptionDao = db.customizationOptionDao()
     private val expenseDao = db.expenseDao()
     private val inventoryDao = db.inventoryDao()
+    private val menuRecipeDao = db.menuRecipeDao()
     private val orderDao = db.orderDao()
     private val stockMovementDao = db.stockMovementDao()
 
@@ -79,12 +82,37 @@ class KedaiKuRepository(
     val allExpensesFlow: Flow<List<ExpenseEntity>> = expenseDao.observeAllExpenses()
     val allInventoryWithCategoriesFlow: Flow<List<InventoryItemWithCategories>> =
         inventoryDao.observeAllInventoryWithCategories()
+    val allRecipesFlow: Flow<List<MenuRecipeEntity>> = menuRecipeDao.observeAllRecipes()
     val allOrdersFlow: Flow<List<OrderWithItems>> = orderDao.observeAllOrdersWithItems()
     val recentMovementsFlow: Flow<List<StockMovementEntity>> = stockMovementDao.observeRecentMovements()
 
     suspend fun ensureDefaultCustomizationOptions() = withContext(Dispatchers.IO) {
         if (customizationOptionDao.countOptions() == 0) {
             customizationOptionDao.insertOptions(defaultCustomizationOptions())
+        }
+        ensureStarterRecipesIfEmpty()
+    }
+
+    private suspend fun ensureStarterRecipesIfEmpty() {
+        if (menuRecipeDao.getAllRecipesSnapshot().isNotEmpty()) return
+        val kop1 = inventoryDao.getBySku("KOP-001")?.id
+        val kop2 = inventoryDao.getBySku("KOP-002")?.id
+        val min3 = inventoryDao.getBySku("MIN-003")?.id
+        val bhn1 = inventoryDao.getBySku("BHN-001")?.id
+        val bhn2 = inventoryDao.getBySku("BHN-002")?.id
+        val bhn3 = inventoryDao.getBySku("BHN-003")?.id
+        val bhn4 = inventoryDao.getBySku("BHN-004")?.id
+
+        val links = buildList {
+            if (kop1 != null && bhn1 != null) add(MenuRecipeEntity(kop1, bhn1, 0.02))
+            if (kop1 != null && bhn2 != null) add(MenuRecipeEntity(kop1, bhn2, 0.15))
+            if (kop1 != null && bhn3 != null) add(MenuRecipeEntity(kop1, bhn3, 0.05))
+            if (kop2 != null && bhn1 != null) add(MenuRecipeEntity(kop2, bhn1, 0.02))
+            if (min3 != null && bhn4 != null) add(MenuRecipeEntity(min3, bhn4, 0.02))
+            if (min3 != null && bhn2 != null) add(MenuRecipeEntity(min3, bhn2, 0.15))
+        }
+        if (links.isNotEmpty()) {
+            menuRecipeDao.insertRecipes(links)
         }
     }
 
@@ -207,12 +235,31 @@ class KedaiKuRepository(
                 sku = "BHN-003", name = "Gula Aren Cair Premium", category = "Bahan Baku",
                 itemType = InventoryType.INGREDIENT.name, customizationGroup = CustomizationGroup.NONE.name,
                 price = 0, costPrice = 38000, stockQty = 5.0, minThreshold = 2.0, unit = "botol", updatedAt = now
+            ) to listOf(catBahan),
+            InventoryItemEntity(
+                sku = "BHN-004", name = "Bubuk Matcha Jepang", category = "Bahan Baku",
+                itemType = InventoryType.INGREDIENT.name, customizationGroup = CustomizationGroup.NONE.name,
+                price = 0, costPrice = 240000, stockQty = 1.0, minThreshold = 0.25, unit = "kg", updatedAt = now
             ) to listOf(catBahan)
         )
 
+        val insertedBySku = mutableMapOf<String, Long>()
         itemsWithCats.forEach { (item, catIds) ->
             val id = inventoryDao.insertItem(item)
+            insertedBySku[item.sku] = id
             categoryDao.insertCrossRefs(catIds.map { catId -> InventoryCategoryCrossRef(id, catId) })
+        }
+
+        val recipeLinks = listOfNotNull(
+            insertedBySku["KOP-001"]?.let { m -> insertedBySku["BHN-001"]?.let { b -> MenuRecipeEntity(m, b, 0.02) } },
+            insertedBySku["KOP-001"]?.let { m -> insertedBySku["BHN-002"]?.let { b -> MenuRecipeEntity(m, b, 0.15) } },
+            insertedBySku["KOP-001"]?.let { m -> insertedBySku["BHN-003"]?.let { b -> MenuRecipeEntity(m, b, 0.05) } },
+            insertedBySku["KOP-002"]?.let { m -> insertedBySku["BHN-001"]?.let { b -> MenuRecipeEntity(m, b, 0.02) } },
+            insertedBySku["MIN-003"]?.let { m -> insertedBySku["BHN-004"]?.let { b -> MenuRecipeEntity(m, b, 0.02) } },
+            insertedBySku["MIN-003"]?.let { m -> insertedBySku["BHN-002"]?.let { b -> MenuRecipeEntity(m, b, 0.15) } }
+        )
+        if (recipeLinks.isNotEmpty()) {
+            menuRecipeDao.insertRecipes(recipeLinks)
         }
     }
 
@@ -325,6 +372,7 @@ class KedaiKuRepository(
     suspend fun saveInventoryItemWithCategories(
         item: InventoryItemEntity,
         selectedCategoryIds: List<Long>,
+        recipeLinks: List<Pair<Long, Double>>,
         actorName: String
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -341,6 +389,32 @@ class KedaiKuRepository(
             categoryDao.deleteCrossRefsForItem(savedId)
             if (validCatIds.isNotEmpty()) {
                 categoryDao.insertCrossRefs(validCatIds.map { InventoryCategoryCrossRef(savedId, it) })
+            }
+
+            if (item.itemType == InventoryType.MENU.name) {
+                menuRecipeDao.deleteRecipesForIngredient(savedId)
+                menuRecipeDao.deleteRecipesForMenu(savedId)
+                val validRecipes = recipeLinks
+                    .filter { (ingId, qty) -> ingId != savedId && qty > 0.0 }
+                    .distinctBy { it.first }
+                    .map { (ingId, qty) ->
+                        MenuRecipeEntity(menuItemId = savedId, ingredientItemId = ingId, quantityRequired = qty)
+                    }
+                if (validRecipes.isNotEmpty()) {
+                    menuRecipeDao.insertRecipes(validRecipes)
+                }
+            } else {
+                menuRecipeDao.deleteRecipesForMenu(savedId)
+                menuRecipeDao.deleteRecipesForIngredient(savedId)
+                val validRecipes = recipeLinks
+                    .filter { (menuId, qty) -> menuId != savedId && qty > 0.0 }
+                    .distinctBy { it.first }
+                    .map { (menuId, qty) ->
+                        MenuRecipeEntity(menuItemId = menuId, ingredientItemId = savedId, quantityRequired = qty)
+                    }
+                if (validRecipes.isNotEmpty()) {
+                    menuRecipeDao.insertRecipes(validRecipes)
+                }
             }
 
             if (existing == null) {
@@ -485,25 +559,48 @@ class KedaiKuRepository(
             orderDao.insertOrderItems(orderItems)
 
             if (!request.saveAsDraft) {
-                val qtyByItem = request.cartLines.groupBy { it.item.id }
-                    .mapValues { (_, list) -> list.sumOf { it.quantity } }
-                qtyByItem.forEach { (itemId, totalQty) ->
-                    val current = inventoryDao.getById(itemId)
-                    if (current != null) {
-                        val newStock = (current.stockQty - totalQty).coerceAtLeast(0.0)
-                        inventoryDao.updateItem(current.copy(stockQty = newStock, updatedAt = now))
-                        stockMovementDao.insertMovement(
-                            StockMovementEntity(
-                                inventoryItemId = current.id,
-                                itemName = current.name,
-                                delta = newStock - current.stockQty,
-                                previousQty = current.stockQty,
-                                newQty = newStock,
-                                reason = "Penjualan $orderNumber",
-                                actorName = request.cashier.name,
-                                createdAt = now
+                request.cartLines.forEach { line ->
+                    val recipes = menuRecipeDao.getRecipesForMenu(line.item.id)
+                        .filter { it.quantityRequired > 0.0 }
+                    if (recipes.isNotEmpty()) {
+                        recipes.forEach { recipe ->
+                            val ingredient = inventoryDao.getById(recipe.ingredientItemId)
+                            if (ingredient != null) {
+                                val consumeQty = recipe.quantityRequired * line.quantity
+                                val newStock = (ingredient.stockQty - consumeQty).coerceAtLeast(0.0)
+                                inventoryDao.updateItem(ingredient.copy(stockQty = newStock, updatedAt = now))
+                                stockMovementDao.insertMovement(
+                                    StockMovementEntity(
+                                        inventoryItemId = ingredient.id,
+                                        itemName = ingredient.name,
+                                        delta = newStock - ingredient.stockQty,
+                                        previousQty = ingredient.stockQty,
+                                        newQty = newStock,
+                                        reason = "Resep ${line.item.name} ($orderNumber)",
+                                        actorName = request.cashier.name,
+                                        createdAt = now
+                                    )
+                                )
+                            }
+                        }
+                    } else {
+                        val current = inventoryDao.getById(line.item.id)
+                        if (current != null) {
+                            val newStock = (current.stockQty - line.quantity).coerceAtLeast(0.0)
+                            inventoryDao.updateItem(current.copy(stockQty = newStock, updatedAt = now))
+                            stockMovementDao.insertMovement(
+                                StockMovementEntity(
+                                    inventoryItemId = current.id,
+                                    itemName = current.name,
+                                    delta = newStock - current.stockQty,
+                                    previousQty = current.stockQty,
+                                    newQty = newStock,
+                                    reason = "Penjualan $orderNumber",
+                                    actorName = request.cashier.name,
+                                    createdAt = now
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -536,32 +633,63 @@ class KedaiKuRepository(
                     previousStatus != OrderStatus.DRAFT.name
                 ) {
                     orderWithItems.items.forEach { line ->
-                        val inv = inventoryDao.getById(line.inventoryItemId)
-                        if (inv != null) {
-                            val restored = inv.stockQty + line.quantity
-                            inventoryDao.updateItem(inv.copy(stockQty = restored, updatedAt = now))
-                            stockMovementDao.insertMovement(
-                                StockMovementEntity(
-                                    inventoryItemId = inv.id,
-                                    itemName = inv.name,
-                                    delta = line.quantity.toDouble(),
-                                    previousQty = inv.stockQty,
-                                    newQty = restored,
-                                    reason = "Batal pesanan ${orderWithItems.order.orderNumber}",
-                                    actorName = actorName,
-                                    createdAt = now
+                        val recipes = menuRecipeDao.getRecipesForMenu(line.inventoryItemId)
+                            .filter { it.quantityRequired > 0.0 }
+                        if (recipes.isNotEmpty()) {
+                            recipes.forEach { recipe ->
+                                val ingredient = inventoryDao.getById(recipe.ingredientItemId)
+                                if (ingredient != null) {
+                                    val restoreQty = recipe.quantityRequired * line.quantity
+                                    val restored = ingredient.stockQty + restoreQty
+                                    inventoryDao.updateItem(ingredient.copy(stockQty = restored, updatedAt = now))
+                                    stockMovementDao.insertMovement(
+                                        StockMovementEntity(
+                                            inventoryItemId = ingredient.id,
+                                            itemName = ingredient.name,
+                                            delta = restoreQty,
+                                            previousQty = ingredient.stockQty,
+                                            newQty = restored,
+                                            reason = "Batal ${orderWithItems.order.orderNumber} (${line.itemName})",
+                                            actorName = actorName,
+                                            createdAt = now
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            val inv = inventoryDao.getById(line.inventoryItemId)
+                            if (inv != null) {
+                                val restored = inv.stockQty + line.quantity
+                                inventoryDao.updateItem(inv.copy(stockQty = restored, updatedAt = now))
+                                stockMovementDao.insertMovement(
+                                    StockMovementEntity(
+                                        inventoryItemId = inv.id,
+                                        itemName = inv.name,
+                                        delta = line.quantity.toDouble(),
+                                        previousQty = inv.stockQty,
+                                        newQty = restored,
+                                        reason = "Batal pesanan ${orderWithItems.order.orderNumber}",
+                                        actorName = actorName,
+                                        createdAt = now
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
             }
+            checkAndNotifyLowStock()
             triggerAutoBackupIfEnabled()
         }
 
     suspend fun checkAndNotifyLowStock(): Int = withContext(Dispatchers.IO) {
         val all = inventoryDao.getAllInventorySnapshot()
-        val low = all.filter { it.stockQty <= it.minThreshold }
+        val itemsById = all.associateBy { it.id }
+        val recipesByMenu = menuRecipeDao.getAllRecipesSnapshot().groupBy { it.menuItemId }
+        val low = all.filter { item ->
+            val effective = RecipeStockCalculator.computeEffectiveStock(item, recipesByMenu, itemsById)
+            effective <= item.minThreshold
+        }
         LowStockNotifier.notifyLowStock(context, low)
         low.size
     }
@@ -594,6 +722,7 @@ class KedaiKuRepository(
             store = prefsState.storeProfile,
             categories = categoryDao.getAllCategoriesSnapshot(),
             categoryRefs = categoryDao.getAllCrossRefsSnapshot(),
+            menuRecipes = menuRecipeDao.getAllRecipesSnapshot(),
             customizationOptions = customizationOptionDao.getAllOptionsSnapshot(),
             expenses = expenseDao.getAllExpensesSnapshot(),
             inventory = inventoryDao.getAllInventorySnapshot(),
@@ -615,6 +744,7 @@ class KedaiKuRepository(
             store = prefsState.storeProfile,
             categories = categoryDao.getAllCategoriesSnapshot(),
             categoryRefs = categoryDao.getAllCrossRefsSnapshot(),
+            menuRecipes = menuRecipeDao.getAllRecipesSnapshot(),
             customizationOptions = customizationOptionDao.getAllOptionsSnapshot(),
             expenses = expenseDao.getAllExpensesSnapshot(),
             inventory = inventoryDao.getAllInventorySnapshot(),
@@ -639,6 +769,7 @@ class KedaiKuRepository(
         db.withTransaction {
             orderDao.deleteAllOrders()
             stockMovementDao.deleteAll()
+            menuRecipeDao.deleteAllRecipes()
             categoryDao.deleteAllCrossRefs()
             categoryDao.deleteAllCategories()
             customizationOptionDao.deleteAllOptions()
@@ -655,6 +786,9 @@ class KedaiKuRepository(
             inventoryDao.insertItems(payload.inventory.map { it.toEntity() })
             if (payload.categoryRefs.isNotEmpty()) {
                 categoryDao.insertCrossRefs(payload.categoryRefs.map { it.toEntity() })
+            }
+            if (payload.menuRecipes.isNotEmpty()) {
+                menuRecipeDao.insertRecipes(payload.menuRecipes.map { it.toEntity() })
             }
             payload.orders.forEach { orderDto ->
                 orderDao.insertOrder(orderDto.toEntity())

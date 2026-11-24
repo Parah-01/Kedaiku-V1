@@ -95,6 +95,7 @@ fun PosScreen(
     menuItems: List<InventoryItemWithCategories>,
     categories: List<CategoryEntity>,
     customizationOptions: List<CustomizationOptionEntity>,
+    effectiveStockMap: Map<Long, Double>,
     cartLines: List<CartLineItem>,
     draftEditContext: DraftEditContext?,
     storeProfile: StoreProfile,
@@ -268,10 +269,12 @@ fun PosScreen(
                     ) {
                         items(filteredMenu, key = { it.item.id }) { entry ->
                             val item = entry.item
+                            val effectiveStock = effectiveStockMap[item.id] ?: item.stockQty
                             val linesForItem = cartLines.filter { it.itemId == item.id }
                             val qtyInCart = linesForItem.sumOf { it.quantity }
                             PosMenuItemCard(
                                 entry = entry,
+                                effectiveStock = effectiveStock,
                                 qtyInCart = qtyInCart,
                                 priceTextColor = priceTextColor,
                                 onAddClick = {
@@ -368,6 +371,7 @@ fun PosScreen(
         ) {
             ItemCustomizationSheetContent(
                 item = item,
+                effectiveStock = effectiveStockMap[item.id] ?: item.stockQty,
                 customizationOptions = customizationOptions,
                 isOwner = isOwner,
                 priceTextColor = priceTextColor,
@@ -422,14 +426,15 @@ fun PosScreen(
 @Composable
 private fun PosMenuItemCard(
     entry: InventoryItemWithCategories,
+    effectiveStock: Double,
     qtyInCart: Int,
     priceTextColor: androidx.compose.ui.graphics.Color,
     onAddClick: () -> Unit,
     onDecreaseSimple: () -> Unit
 ) {
     val item = entry.item
-    val isOut = item.isOutOfStock
-    val isLow = item.isLowStock
+    val isOut = effectiveStock <= 0.0
+    val isLow = effectiveStock <= item.minThreshold && effectiveStock > 0.0
     val hasCustomOptions = item.customizationGroup == CustomizationGroup.DRINK.name ||
         item.customizationGroup == CustomizationGroup.FOOD.name
 
@@ -493,7 +498,7 @@ private fun PosMenuItemCard(
                             text = if (isOut) {
                                 "Habis"
                             } else {
-                                "Stok ${Formatters.formatQty(item.stockQty)} ${item.unit}"
+                                "Stok ${Formatters.formatQty(effectiveStock)} ${item.unit}"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = when {
@@ -585,6 +590,7 @@ private fun PosMenuItemCard(
 @Composable
 private fun ItemCustomizationSheetContent(
     item: InventoryItemEntity,
+    effectiveStock: Double,
     customizationOptions: List<CustomizationOptionEntity>,
     isOwner: Boolean,
     priceTextColor: androidx.compose.ui.graphics.Color,
@@ -861,7 +867,7 @@ private fun ItemCustomizationSheetContent(
                 }
                 Text(qty.toString(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Surface(
-                    onClick = { if (qty < item.stockQty.toInt().coerceAtLeast(1)) qty++ },
+                    onClick = { if (qty < effectiveStock.toInt().coerceAtLeast(1)) qty++ },
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,

@@ -26,10 +26,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -65,16 +67,16 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.local.CategoryEntity
 import com.example.data.local.CustomizationGroup
-import com.example.data.local.CustomizationOptionEntity
 import com.example.data.local.InventoryItemEntity
 import com.example.data.local.InventoryItemWithCategories
 import com.example.data.local.InventoryType
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.StockMovementEntity
-import com.example.ui.components.CustomizationOptionsManagerDialog
 import com.example.ui.theme.GoldenYellowTextAccent
 import com.example.ui.theme.MonoPriceStyle
 import com.example.ui.theme.ThemeMode
 import com.example.util.Formatters
+import com.example.util.RecipeStockCalculator
 
 private enum class InventoryFilter(val label: String) {
     ALL("Semua"),
@@ -88,17 +90,16 @@ private enum class InventoryFilter(val label: String) {
 fun InventoryScreen(
     inventoryWithCategories: List<InventoryItemWithCategories>,
     categories: List<CategoryEntity>,
-    customizationOptions: List<CustomizationOptionEntity>,
+    menuRecipes: List<MenuRecipeEntity>,
+    effectiveStockMap: Map<Long, Double>,
     movements: List<StockMovementEntity>,
     isOwner: Boolean,
     themeMode: ThemeMode,
-    onSaveItem: (InventoryItemEntity, List<Long>) -> Unit,
+    onSaveItem: (InventoryItemEntity, List<Long>, List<Pair<Long, Double>>) -> Unit,
     onAdjustStock: (InventoryItemEntity, Double, String) -> Unit,
     onDeleteItem: (InventoryItemEntity) -> Unit,
     onSaveCategory: (id: Long, name: String, description: String) -> Unit,
     onDeleteCategory: (CategoryEntity) -> Unit,
-    onSaveCustomizationOption: (CustomizationOptionEntity) -> Unit,
-    onDeleteCustomizationOption: (CustomizationOptionEntity) -> Unit,
     onCheckLowStockNotifications: () -> Unit
 ) {
     var filter by rememberSaveable { mutableStateOf(InventoryFilter.ALL) }
@@ -106,7 +107,6 @@ fun InventoryScreen(
     var editingEntry by remember { mutableStateOf<InventoryItemWithCategories?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showCategoryManager by remember { mutableStateOf(false) }
-    var showCustomizationManager by remember { mutableStateOf(false) }
     var adjustingItem by remember { mutableStateOf<InventoryItemEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<InventoryItemEntity?>(null) }
     var showMovementsSheet by remember { mutableStateOf(false) }
@@ -114,17 +114,37 @@ fun InventoryScreen(
     val isDark = themeMode == ThemeMode.DARK || (themeMode == ThemeMode.SYSTEM && isSystemInDarkTheme())
     val priceTextColor = if (isDark) MaterialTheme.colorScheme.primary else GoldenYellowTextAccent
 
-    val lowCount = inventoryWithCategories.count { it.item.isLowStock }
-    val outCount = inventoryWithCategories.count { it.item.isOutOfStock }
+    val allInventoryItems = remember(inventoryWithCategories) {
+        inventoryWithCategories.map { it.item }
+    }
+    val itemsById = remember(allInventoryItems) {
+        allInventoryItems.associateBy { it.id }
+    }
+    val recipesByMenuId = remember(menuRecipes) {
+        menuRecipes.groupBy { it.menuItemId }
+    }
+    val recipesByIngredientId = remember(menuRecipes) {
+        menuRecipes.groupBy { it.ingredientItemId }
+    }
 
-    val filtered = remember(inventoryWithCategories, filter, selectedCategoryId) {
+    val lowCount = inventoryWithCategories.count { entry ->
+        val eff = effectiveStockMap[entry.item.id] ?: entry.item.stockQty
+        eff > 0.0 && eff <= entry.item.minThreshold
+    }
+    val outCount = inventoryWithCategories.count { entry ->
+        val eff = effectiveStockMap[entry.item.id] ?: entry.item.stockQty
+        eff <= 0.0
+    }
+
+    val filtered = remember(inventoryWithCategories, effectiveStockMap, filter, selectedCategoryId) {
         inventoryWithCategories.filter { entry ->
             val item = entry.item
+            val eff = effectiveStockMap[item.id] ?: item.stockQty
             val matchType = when (filter) {
                 InventoryFilter.ALL -> true
                 InventoryFilter.MENU -> item.itemType == InventoryType.MENU.name
                 InventoryFilter.INGREDIENT -> item.itemType == InventoryType.INGREDIENT.name
-                InventoryFilter.LOW -> item.stockQty <= item.minThreshold
+                InventoryFilter.LOW -> eff <= item.minThreshold
             }
             val matchCat = selectedCategoryId == -1L || entry.categories.any { it.id == selectedCategoryId }
             matchType && matchCat
@@ -164,34 +184,29 @@ fun InventoryScreen(
             }
 
             // Action strip
-            FlowRow(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (isOwner) {
                     OutlinedButton(
                         onClick = { showCategoryManager = true },
-                        modifier = Modifier.testTag("manage_categories_button")
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("manage_categories_button")
                     ) {
                         Icon(Icons.Default.Category, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Kategori")
                     }
-                    OutlinedButton(
-                        onClick = { showCustomizationManager = true },
-                        modifier = Modifier.testTag("manage_customization_prices_button")
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Harga Varian & Toping")
-                    }
                 }
                 OutlinedButton(
                     onClick = { showMovementsSheet = true },
-                    modifier = Modifier.testTag("inventory_history_button")
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("inventory_history_button")
                 ) {
                     Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -199,7 +214,9 @@ fun InventoryScreen(
                 }
                 OutlinedButton(
                     onClick = onCheckLowStockNotifications,
-                    modifier = Modifier.testTag("inventory_check_notif_button")
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("inventory_check_notif_button")
                 ) {
                     Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -281,8 +298,38 @@ fun InventoryScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(filtered, key = { it.item.id }) { entry ->
+                        val item = entry.item
+                        val effectiveStock = effectiveStockMap[item.id] ?: item.stockQty
+                        val recipeSummary = if (item.itemType == InventoryType.MENU.name) {
+                            val list = recipesByMenuId[item.id].orEmpty()
+                            if (list.isEmpty()) {
+                                null
+                            } else {
+                                "Resep: " + list.mapNotNull { r ->
+                                    itemsById[r.ingredientItemId]?.let { ing ->
+                                        "${ing.name} (${Formatters.formatQty(r.quantityRequired)} ${ing.unit})"
+                                    }
+                                }.joinToString(", ")
+                            }
+                        } else {
+                            val usedIn = recipesByIngredientId[item.id].orEmpty()
+                            if (usedIn.isEmpty()) {
+                                null
+                            } else {
+                                "Dipakai di: " + usedIn.mapNotNull { r ->
+                                    itemsById[r.menuItemId]?.let { m ->
+                                        "${m.name} (${Formatters.formatQty(r.quantityRequired)} ${item.unit})"
+                                    }
+                                }.joinToString(", ")
+                            }
+                        }
+                        val hasRecipeDrivenStock = item.itemType == InventoryType.MENU.name &&
+                            recipesByMenuId[item.id].orEmpty().isNotEmpty()
                         InventoryItemCard(
                             entry = entry,
+                            effectiveStock = effectiveStock,
+                            hasRecipeDrivenStock = hasRecipeDrivenStock,
+                            recipeSummary = recipeSummary,
                             isOwner = isOwner,
                             priceTextColor = priceTextColor,
                             onAdjustClick = { adjustingItem = entry.item },
@@ -318,22 +365,15 @@ fun InventoryScreen(
         )
     }
 
-    if (showCustomizationManager && isOwner) {
-        CustomizationOptionsManagerDialog(
-            options = customizationOptions,
-            onDismiss = { showCustomizationManager = false },
-            onSaveOption = onSaveCustomizationOption,
-            onDeleteOption = onDeleteCustomizationOption
-        )
-    }
-
     if (showAddDialog) {
         AddEditInventoryDialog(
             existing = null,
             categories = categories,
+            allInventory = allInventoryItems,
+            existingRecipes = menuRecipes,
             onDismiss = { showAddDialog = false },
-            onSave = { item, catIds ->
-                onSaveItem(item, catIds)
+            onSave = { item, catIds, recipeLinks ->
+                onSaveItem(item, catIds, recipeLinks)
                 showAddDialog = false
             }
         )
@@ -343,9 +383,11 @@ fun InventoryScreen(
         AddEditInventoryDialog(
             existing = entry,
             categories = categories,
+            allInventory = allInventoryItems,
+            existingRecipes = menuRecipes,
             onDismiss = { editingEntry = null },
-            onSave = { updated, catIds ->
-                onSaveItem(updated, catIds)
+            onSave = { updated, catIds, recipeLinks ->
+                onSaveItem(updated, catIds, recipeLinks)
                 editingEntry = null
             }
         )
@@ -615,6 +657,9 @@ private fun InventoryStatChip(
 @Composable
 private fun InventoryItemCard(
     entry: InventoryItemWithCategories,
+    effectiveStock: Double,
+    hasRecipeDrivenStock: Boolean,
+    recipeSummary: String?,
     isOwner: Boolean,
     priceTextColor: androidx.compose.ui.graphics.Color,
     onAdjustClick: () -> Unit,
@@ -623,19 +668,21 @@ private fun InventoryItemCard(
 ) {
     val item = entry.item
     val typeLabel = InventoryType.entries.find { it.name == item.itemType }?.label ?: item.itemType
+    val isOut = effectiveStock <= 0.0
+    val isLow = !isOut && effectiveStock <= item.minThreshold
     val statusContainer = when {
-        item.isOutOfStock -> MaterialTheme.colorScheme.errorContainer
-        item.isLowStock -> MaterialTheme.colorScheme.tertiaryContainer
+        isOut -> MaterialTheme.colorScheme.errorContainer
+        isLow -> MaterialTheme.colorScheme.tertiaryContainer
         else -> MaterialTheme.colorScheme.secondaryContainer
     }
     val statusContent = when {
-        item.isOutOfStock -> MaterialTheme.colorScheme.onErrorContainer
-        item.isLowStock -> MaterialTheme.colorScheme.onTertiaryContainer
+        isOut -> MaterialTheme.colorScheme.onErrorContainer
+        isLow -> MaterialTheme.colorScheme.onTertiaryContainer
         else -> MaterialTheme.colorScheme.onSecondaryContainer
     }
     val statusText = when {
-        item.isOutOfStock -> "HABIS"
-        item.isLowStock -> "MENIPIS"
+        isOut -> "HABIS"
+        isLow -> "MENIPIS"
         else -> "AMAN"
     }
 
@@ -698,14 +745,44 @@ private fun InventoryItemCard(
                 }
             }
 
+            if (!recipeSummary.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Link,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = recipeSummary,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
-                        "Stok: ${Formatters.formatQty(item.stockQty)} ${item.unit} (Min: ${Formatters.formatQty(item.minThreshold)})",
+                        text = if (hasRecipeDrivenStock) {
+                            "Stok Resep: ${Formatters.formatQty(effectiveStock)} ${item.unit} (Min: ${Formatters.formatQty(item.minThreshold)})"
+                        } else {
+                            "Stok: ${Formatters.formatQty(effectiveStock)} ${item.unit} (Min: ${Formatters.formatQty(item.minThreshold)})"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -726,14 +803,16 @@ private fun InventoryItemCard(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(
-                        onClick = onAdjustClick,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("inventory_adjust_${item.id}")
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Stok")
+                    if (!hasRecipeDrivenStock) {
+                        OutlinedButton(
+                            onClick = onAdjustClick,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("inventory_adjust_${item.id}")
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Stok")
+                        }
                     }
                     if (isOwner) {
                         IconButton(
@@ -838,8 +917,10 @@ private fun AdjustStockDialog(
 private fun AddEditInventoryDialog(
     existing: InventoryItemWithCategories?,
     categories: List<CategoryEntity>,
+    allInventory: List<InventoryItemEntity>,
+    existingRecipes: List<MenuRecipeEntity>,
     onDismiss: () -> Unit,
-    onSave: (InventoryItemEntity, List<Long>) -> Unit
+    onSave: (InventoryItemEntity, List<Long>, List<Pair<Long, Double>>) -> Unit
 ) {
     val existingItem = existing?.item
     var name by remember { mutableStateOf(existingItem?.name ?: "") }
@@ -868,6 +949,50 @@ private fun AddEditInventoryDialog(
     var minStr by remember { mutableStateOf(existingItem?.let { Formatters.formatQty(it.minThreshold) } ?: "5") }
     var unit by remember { mutableStateOf(existingItem?.unit ?: "pcs") }
     var available by remember { mutableStateOf(existingItem?.isAvailable ?: true) }
+
+    // Initial recipe links:
+    // - If editing MENU: ingredientItemId -> quantityRequired
+    // - If editing INGREDIENT: menuItemId -> quantityRequired
+    var recipeQtyMap by remember(existingItem?.id, itemType) {
+        val initial = if (existingItem != null) {
+            if (itemType == InventoryType.MENU) {
+                existingRecipes.filter { it.menuItemId == existingItem.id }
+                    .associate { it.ingredientItemId to it.quantityRequired.toString() }
+            } else {
+                existingRecipes.filter { it.ingredientItemId == existingItem.id }
+                    .associate { it.menuItemId to it.quantityRequired.toString() }
+            }
+        } else {
+            emptyMap()
+        }
+        mutableStateOf(initial)
+    }
+
+    val linkCandidates = remember(allInventory, itemType, existingItem?.id) {
+        val targetType = if (itemType == InventoryType.MENU) {
+            InventoryType.INGREDIENT.name
+        } else {
+            InventoryType.MENU.name
+        }
+        allInventory.filter { it.itemType == targetType && it.id != existingItem?.id }
+    }
+    val candidatesById = remember(linkCandidates) { linkCandidates.associateBy { it.id } }
+
+    val smartSuggestions = remember(name, linkCandidates, recipeQtyMap) {
+        RecipeStockCalculator.suggestMatchingItems(name, linkCandidates)
+            .filter { it.id !in recipeQtyMap }
+    }
+
+    val estimatedRecipeCost = remember(recipeQtyMap, candidatesById, itemType) {
+        if (itemType != InventoryType.MENU) 0L
+        else {
+            val pairs = recipeQtyMap.mapNotNull { (id, qStr) ->
+                val q = qStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                if (q > 0.0) id to q else null
+            }
+            RecipeStockCalculator.computeRecipeCostPrice(pairs, candidatesById)
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -954,6 +1079,153 @@ private fun AddEditInventoryDialog(
                     }
                 }
 
+                // Professional BOM / Recipe Linking Section
+                HorizontalDivider()
+                Text(
+                    text = if (itemType == InventoryType.MENU) {
+                        "Resep & Komposisi Bahan Baku (Opsional)"
+                    } else {
+                        "Hubungkan ke Menu Jual (Opsional)"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (itemType == InventoryType.MENU) {
+                        "Jika diisi, penjualan menu ini otomatis memotong stok bahan baku dan menghitung ketersediaan di Kasir."
+                    } else {
+                        "Pilih menu yang memakai bahan ini agar stok bahan terpotong otomatis saat menu terjual."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (smartSuggestions.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                "Saran Cocok Otomatis:",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                smartSuggestions.forEach { cand ->
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = {
+                                            val defaultQty = if (itemType == InventoryType.MENU) {
+                                                if (cand.unit.lowercase() in listOf("kg", "liter", "l")) "0.02" else "1"
+                                            } else {
+                                                if (unit.lowercase() in listOf("kg", "liter", "l")) "0.02" else "1"
+                                            }
+                                            recipeQtyMap = recipeQtyMap + (cand.id to defaultQty)
+                                        },
+                                        label = { Text("+ Hubungkan ${cand.name}") },
+                                        modifier = Modifier.testTag("recipe_suggest_${cand.id}")
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (linkCandidates.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        linkCandidates.forEach { cand ->
+                            val isLinked = cand.id in recipeQtyMap
+                            FilterChip(
+                                selected = isLinked,
+                                onClick = {
+                                    recipeQtyMap = if (isLinked) {
+                                        recipeQtyMap - cand.id
+                                    } else {
+                                        val defaultQty = if (itemType == InventoryType.MENU) {
+                                            if (cand.unit.lowercase() in listOf("kg", "liter", "l")) "0.02" else "1"
+                                        } else {
+                                            if (unit.lowercase() in listOf("kg", "liter", "l")) "0.02" else "1"
+                                        }
+                                        recipeQtyMap + (cand.id to defaultQty)
+                                    }
+                                },
+                                label = { Text(cand.name) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("recipe_toggle_${cand.id}")
+                            )
+                        }
+                    }
+                }
+
+                recipeQtyMap.entries.forEach { (candId, qtyText) ->
+                    val cand = candidatesById[candId]
+                    if (cand != null) {
+                        val unitHint = if (itemType == InventoryType.MENU) cand.unit else unit.ifBlank { "unit" }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = qtyText,
+                                onValueChange = { v ->
+                                    val filteredVal = v.filter { it.isDigit() || it == '.' }
+                                    recipeQtyMap = recipeQtyMap + (candId to filteredVal)
+                                },
+                                label = { Text("${cand.name} ($unitHint/porsi)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("recipe_qty_$candId")
+                            )
+                            IconButton(
+                                onClick = { recipeQtyMap = recipeQtyMap - candId },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Hapus relasi ${cand.name}")
+                            }
+                        }
+                    }
+                }
+
+                if (itemType == InventoryType.MENU && estimatedRecipeCost > 0L) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Estimasi HPP Resep: ${Formatters.formatRupiah(estimatedRecipeCost)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        TextButton(
+                            onClick = { costStr = estimatedRecipeCost.toString() },
+                            modifier = Modifier.testTag("apply_recipe_hpp_button")
+                        ) {
+                            Text("Pakai HPP")
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (itemType == InventoryType.MENU) {
                         OutlinedTextField(
@@ -980,7 +1252,7 @@ private fun AddEditInventoryDialog(
                     OutlinedTextField(
                         value = stockStr,
                         onValueChange = { v -> stockStr = v.filter { it.isDigit() || it == '.' } },
-                        label = { Text("Stok Awal") },
+                        label = { Text(if (itemType == InventoryType.MENU && recipeQtyMap.isNotEmpty()) "Stok Manual (Cadangan)" else "Stok Awal") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         singleLine = true,
                         modifier = Modifier.weight(1f)
@@ -1020,6 +1292,10 @@ private fun AddEditInventoryDialog(
                     if (name.isNotBlank()) {
                         val fallbackCat = categories.filter { it.id in selectedCategoryIds }
                             .joinToString(", ") { it.name }.ifBlank { "Umum" }
+                        val parsedRecipes = recipeQtyMap.mapNotNull { (targetId, qStr) ->
+                            val q = qStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                            if (q > 0.0) targetId to q else null
+                        }
                         onSave(
                             InventoryItemEntity(
                                 id = existingItem?.id ?: 0L,
@@ -1035,7 +1311,8 @@ private fun AddEditInventoryDialog(
                                 unit = unit.trim().ifEmpty { "pcs" },
                                 isAvailable = available
                             ),
-                            selectedCategoryIds.toList()
+                            selectedCategoryIds.toList(),
+                            parsedRecipes
                         )
                     }
                 },

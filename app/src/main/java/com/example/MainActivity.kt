@@ -168,8 +168,8 @@ private fun KedaiKuRoot(
         }
     }
     val lowStockCount = state.lowStockItems.size
-    val outOfStockCount = remember(state.lowStockItems) {
-        state.lowStockItems.count { it.isOutOfStock }
+    val outOfStockCount = remember(state.lowStockItems, state.effectiveStockMap) {
+        state.lowStockItems.count { (state.effectiveStockMap[it.id] ?: it.stockQty) <= 0.0 }
     }
     val needsNotifPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotifPermission
 
@@ -269,6 +269,7 @@ private fun KedaiKuRoot(
                                 menuItems = state.availableMenu,
                                 categories = state.categories,
                                 customizationOptions = state.customizationOptions,
+                                effectiveStockMap = state.effectiveStockMap,
                                 cartLines = state.cartLines,
                                 draftEditContext = state.draftEditContext,
                                 storeProfile = state.storeProfile,
@@ -316,17 +317,18 @@ private fun KedaiKuRoot(
                             AppTab.INVENTORY -> InventoryScreen(
                                 inventoryWithCategories = state.inventoryWithCategories,
                                 categories = state.categories,
-                                customizationOptions = state.customizationOptions,
+                                menuRecipes = state.menuRecipes,
+                                effectiveStockMap = state.effectiveStockMap,
                                 movements = state.recentMovements,
                                 isOwner = state.isOwner,
                                 themeMode = state.themeMode,
-                                onSaveItem = { item, catIds -> viewModel.saveInventoryItem(item, catIds) },
+                                onSaveItem = { item, catIds, recipeLinks ->
+                                    viewModel.saveInventoryItem(item, catIds, recipeLinks)
+                                },
                                 onAdjustStock = { item, delta, reason -> viewModel.adjustStock(item, delta, reason) },
                                 onDeleteItem = { item -> viewModel.deleteInventoryItem(item) },
                                 onSaveCategory = { id, name, desc -> viewModel.saveCategory(id, name, desc) },
                                 onDeleteCategory = { cat -> viewModel.deleteCategory(cat) },
-                                onSaveCustomizationOption = { opt -> viewModel.saveCustomizationOption(opt) },
-                                onDeleteCustomizationOption = { opt -> viewModel.deleteCustomizationOption(opt) },
                                 onCheckLowStockNotifications = {
                                     if (needsNotifPermission) {
                                         requestNotifications()

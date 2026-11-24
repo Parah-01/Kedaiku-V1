@@ -162,6 +162,33 @@ interface InventoryDao {
 }
 
 @Dao
+interface MenuRecipeDao {
+    @Query("SELECT * FROM menu_recipes ORDER BY menuItemId ASC, ingredientItemId ASC")
+    fun observeAllRecipes(): Flow<List<MenuRecipeEntity>>
+
+    @Query("SELECT * FROM menu_recipes ORDER BY menuItemId ASC, ingredientItemId ASC")
+    suspend fun getAllRecipesSnapshot(): List<MenuRecipeEntity>
+
+    @Query("SELECT * FROM menu_recipes WHERE menuItemId = :menuItemId")
+    suspend fun getRecipesForMenu(menuItemId: Long): List<MenuRecipeEntity>
+
+    @Query("SELECT * FROM menu_recipes WHERE ingredientItemId = :ingredientItemId")
+    suspend fun getRecipesForIngredient(ingredientItemId: Long): List<MenuRecipeEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecipes(recipes: List<MenuRecipeEntity>)
+
+    @Query("DELETE FROM menu_recipes WHERE menuItemId = :menuItemId")
+    suspend fun deleteRecipesForMenu(menuItemId: Long)
+
+    @Query("DELETE FROM menu_recipes WHERE ingredientItemId = :ingredientItemId")
+    suspend fun deleteRecipesForIngredient(ingredientItemId: Long)
+
+    @Query("DELETE FROM menu_recipes")
+    suspend fun deleteAllRecipes()
+}
+
+@Dao
 interface OrderDao {
     @Transaction
     @Query("SELECT * FROM orders ORDER BY createdAt DESC")

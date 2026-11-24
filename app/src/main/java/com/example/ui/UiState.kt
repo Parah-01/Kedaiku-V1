@@ -6,6 +6,7 @@ import com.example.data.local.ExpenseCategory
 import com.example.data.local.ExpenseEntity
 import com.example.data.local.InventoryItemEntity
 import com.example.data.local.InventoryItemWithCategories
+import com.example.data.local.MenuRecipeEntity
 import com.example.data.local.OrderType
 import com.example.data.local.OrderWithItems
 import com.example.data.local.PaymentMethod
@@ -109,6 +110,8 @@ data class MainUiState(
     val categories: List<CategoryEntity> = emptyList(),
     val customizationOptions: List<CustomizationOptionEntity> = emptyList(),
     val expenses: List<ExpenseEntity> = emptyList(),
+    val menuRecipes: List<MenuRecipeEntity> = emptyList(),
+    val effectiveStockMap: Map<Long, Double> = emptyMap(),
     val inventoryWithCategories: List<InventoryItemWithCategories> = emptyList(),
     val availableMenu: List<InventoryItemWithCategories> = emptyList(),
     val lowStockItems: List<InventoryItemEntity> = emptyList(),
