@@ -1,0 +1,6 @@
+{
+  "name": "KedaiKu",
+  "description": "Aplikasi kasir dan manajemen toko F&B offline dengan pelacakan stok, analitik penjualan real-time, manajemen pesanan, cetak struk, ekspor/impor Excel & PDF, serta auto-save & backup otomatis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

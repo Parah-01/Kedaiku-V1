@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KedaiKu</string>
+    <string name="notification_channel_low_stock_name">Peringatan Stok Menipis</string>
+    <string name="notification_channel_low_stock_desc">Notifikasi otomatis saat stok menu atau bahan baku F&amp;B mendekati habis.</string>
+</resources>
